@@ -1,0 +1,528 @@
+---
+title: "COVID-19 in the CA Bay Area"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(tidyverse)
+library(plotly)
+library(whisker)
+library(RCurl)
+
+# read in COVID-19 data
+u <- getURL("https://raw.githubusercontent.com/datadesk/california-coronavirus-data/master/latimes-county-totals.csv")
+covid <- read.csv(text = u)
+
+# filter on Bay Area counties
+bay <- filter(covid, 
+              county %in% c("Alameda","Contra Costa","Marin","Monterey","Napa","San Francisco",
+                           "San Mateo","Santa Clara","Santa Cruz","Solano","Sonoma") & confirmed_cases > 0
+)
+
+# clean up issue caused by confirmed_cases = 0 in June
+bay$new_confirmed_cases[bay$date == "2020-06-04" & bay$county == "Alameda"] <- NA
+bay$new_confirmed_cases[bay$date == "2020-06-05" & bay$county != "Alameda" & bay$county != "Contra Costa"] <-  NA
+
+# format date
+bay$date <- as.Date(bay$date, format = "%Y-%m-%d")
+
+# read in population data
+pop <- read_csv("pop_bayarea.csv")
+
+# add county populations to COVID-19 data
+# normalize infected total by 100K residents
+bay <- inner_join(bay, pop) %>%
+  mutate(confirmed_cases_norm = confirmed_cases*100000/population)
+
+# separate data for each county
+ac <- filter(bay, county == "Alameda")
+cc <- filter(bay, county == "Contra Costa")
+mc <- filter(bay, county == "Marin")
+mo <- filter(bay, county == "Monterey")
+nc <- filter(bay, county == "Napa")
+sf <- filter(bay, county == "San Francisco")
+sm <- filter(bay, county == "San Mateo")
+scc <- filter(bay, county == "Santa Clara")
+scz <- filter(bay, county == "Santa Cruz")
+sol <- filter(bay, county == "Solano")
+son <- filter(bay, county == "Sonoma")
+
+# Whisker template for total cases (reusing for diff counties)
+template_tot <-
+'
+{{county_abbv}}_tot <- ggplot({{county_abbv}}, aes(x = date,
+                                 y = confirmed_cases,
+                                 text = paste0("<b>Date: </b>", format(date, format = "%b %d"), "<br>",
+                                               "<b>Total cases: </b>", confirmed_cases, "<br>",
+                                               "<b>Additional cases today: </b>", new_confirmed_cases),
+                                 group = 1)) +
+  xlab("") +
+  ylab("Confirmed cases") +
+  theme_minimal(base_size = 14) +
+  geom_point(color = "{{county_color}}") +
+  geom_line(color = "{{county_color}}")
+
+ggplotly({{county_abbv}}_tot, tooltip = "text") %>%
+  config(displayModeBar = FALSE)  %>%
+  layout(hoverlabel = list(align = "left"))
+'
+
+# Whisker template for new cases (reusing for diff counties)
+template_new <-
+'
+{{county_abbv}}_new <- ggplot(filter({{county_abbv}}, !is.na(new_confirmed_cases)), aes(x = date,
+                                 y = new_confirmed_cases,
+                                 text = paste0("<b>Date: </b>", format(date, format = "%b %d"), "<br>",
+                                               "<b>Additional cases today: </b>", new_confirmed_cases),
+                                 group = 1)) +
+  xlab("") +
+  ylab("Confirmed cases") +
+  theme_minimal(base_size = 14) +
+  geom_col(fill = "{{county_color}}")
+
+ggplotly({{county_abbv}}_new, tooltip = "text") %>%
+  config(displayModeBar = FALSE)  %>%
+  layout(hoverlabel = list(align = "left"))
+'
+
+# Whisker template for deaths (reusing for diff counties)
+template_deaths <-
+'
+{{county_abbv}}_deaths <- ggplot({{county_abbv}}, aes(x = date,
+                                    y = deaths,
+                                    text = paste0("<b>Date: </b>", format(date, format = "%b %d"), "<br>",
+                                                  "<b>Total deaths: </b>", deaths, "<br>",
+                                                  "<b>Additional deaths today: </b>", new_deaths),
+                                    group = 1)) +
+  xlab("") +
+  ylab("Deaths") +
+  theme_minimal(base_size = 14) +
+  geom_point(data = filter({{county_abbv}}, new_deaths > 0), color = "gray50") + 
+  geom_line(color = "gray50")
+
+ggplotly({{county_abbv}}_deaths, tooltip = "text") %>%
+  config(displayModeBar = FALSE) %>%
+  layout(hoverlabel = list(align = "left"))
+'
+
+# metadata for each county
+ac_data <- list(county_abbv = "ac", county_color = "#a6cee3")
+cc_data <- list(county_abbv = "cc", county_color = "#1f78b4")
+mc_data <- list(county_abbv = "mc", county_color = "#b2df8a")
+mo_data <- list(county_abbv = "mo", county_color = "#33a02c")
+nc_data <- list(county_abbv = "nc", county_color = "#fb9a99")
+sf_data <- list(county_abbv = "sf", county_color = "#e31a1c")
+sm_data <- list(county_abbv = "sm", county_color = "#fdbf6f")
+scc_data <- list(county_abbv = "scc", county_color = "#ff7f00")
+scz_data <- list(county_abbv = "scz", county_color = "#cab2d6")
+sol_data <- list(county_abbv = "sol", county_color = "#6a3d9a")
+son_data <- list(county_abbv = "son", county_color = "#ffff99")
+
+```
+
+All
+=====================================
+- Numbers from [L.A. Times coronavirus data](https://github.com/datadesk/california-coronavirus-data/blob/master/latimes-county-totals.csv)
+- Populations for normalization based on 2019 population estimates provided by [U.S. Census Bureau QuickFacts](https://www.census.gov/quickfacts/fact/table/US/PST045219)
+
+Column {.tabset}
+-------------------------------------
+### Original Data, Linear Scale
+```{r}
+bay_total_chart <- ggplot(bay, aes(x = date,
+                                   y = confirmed_cases,
+                                   color = county,
+                                   text = paste0("<b>County: </b>", county, "<br>",
+                                                 "<b>Date: </b>", format(date, format = "%b %d"), "<br>",
+                                                 "<b>Total cases: </b>", confirmed_cases, "<br>",
+                                                 "<b>Additional cases today: </b>", new_confirmed_cases),
+                                   group = 1)) +
+  xlab("") +
+  ylab("Confirmed cases") +
+  theme_minimal(base_size = 14) +
+  geom_point() +
+  geom_line() +
+  scale_color_brewer(palette = "Paired",
+                   name="",
+                   breaks=c("Alameda",
+                            "Contra Costa",
+                            "Marin",
+                            "Monterey",
+                            "Napa",
+                            "San Francisco",
+                            "San Mateo",
+                            "Santa Clara",
+                            "Santa Cruz",
+                            "Solano",
+                            "Sonoma"))
+
+ggplotly(bay_total_chart, tooltip = "text") %>%
+  config(displayModeBar = FALSE)  %>%
+  layout(hoverlabel = list(align = "left"))
+```
+
+### Original Data, Log Scale
+
+```{r}
+bay_total_log <- ggplot(bay, aes(x = date,
+                                 y = confirmed_cases,
+                                 color = county,
+                                 text = paste0("<b>County: </b>", county, "<br>",
+                                               "<b>Date: </b>", format(date, format = "%b %d"), "<br>",
+                                               "<b>Total cases: </b>", confirmed_cases, "<br>",
+                                               "<b>Additional cases today: </b>", new_confirmed_cases),
+                                 group = 1)) +
+  xlab("") +
+  ylab("Confirmed cases") +
+  scale_y_continuous(trans = "log10")  +
+  theme_minimal(base_size = 14) +
+  geom_point() +
+  geom_line() +
+  scale_color_brewer(palette = "Paired",
+                   name="",
+                   breaks=c("Alameda",
+                            "Contra Costa",
+                            "Marin",
+                            "Monterey",
+                            "Napa",
+                            "San Francisco",
+                            "San Mateo",
+                            "Santa Clara",
+                            "Santa Cruz",
+                            "Solano",
+                            "Sonoma"))
+
+ggplotly(bay_total_log, tooltip = "text") %>%
+  config(displayModeBar = FALSE)  %>%
+  layout(hoverlabel = list(align = "left"))
+```
+
+### Normalized Data, Linear Scale
+
+```{r}
+bay_norm_total_chart <- ggplot(bay, aes(x = date,
+                                   y = confirmed_cases_norm,
+                                   color = county,
+                                   text = paste0("<b>County: </b>", county, "<br>",
+                                                 "<b>Date: </b>", format(date, format = "%b %d"), "<br>",
+                                                 "<b>Total cases (per 100K residents): </b>",
+                                                 format(round(confirmed_cases_norm, 2), nsmall = 2)),
+                                   group = 1)) +
+  xlab("") +
+  ylab("Confirmed cases per 100,000 county residents") +
+  theme_minimal(base_size = 14) +
+  geom_point() +
+  geom_line() +
+  scale_color_brewer(palette = "Paired",
+                   name="",
+                   breaks=c("Alameda",
+                            "Contra Costa",
+                            "Marin",
+                            "Monterey",
+                            "Napa",
+                            "San Francisco",
+                            "San Mateo",
+                            "Santa Clara",
+                            "Santa Cruz",
+                            "Solano",
+                            "Sonoma"))
+
+ggplotly(bay_norm_total_chart, tooltip = "text") %>%
+  config(displayModeBar = FALSE)  %>%
+  layout(hoverlabel = list(align = "left"))
+```
+
+### Normalized Data, Log Scale
+
+```{r}
+bay_norm_total_log <- ggplot(bay, aes(x = date,
+                                   y = confirmed_cases_norm,
+                                   color = county,
+                                   text = paste0("<b>County: </b>", county, "<br>",
+                                                 "<b>Date: </b>", format(date, format = "%b %d"), "<br>",
+                                                 "<b>Total cases (per 100K residents): </b>",
+                                                 format(round(confirmed_cases_norm, 2), nsmall = 2)),
+                                   group = 1)) +
+  xlab("") +
+  ylab("Confirmed cases per 100,000 county residents") +
+  scale_y_continuous(trans = "log10")  +
+  theme_minimal(base_size = 14) +
+  geom_point() +
+  geom_line() +
+  scale_color_brewer(palette = "Paired",
+                   name="",
+                   breaks=c("Alameda",
+                            "Contra Costa",
+                            "Marin",
+                            "Monterey",
+                            "Napa",
+                            "San Francisco",
+                            "San Mateo",
+                            "Santa Clara",
+                            "Santa Cruz",
+                            "Solano",
+                            "Sonoma"))
+
+ggplotly(bay_norm_total_log, tooltip = "text") %>%
+  config(displayModeBar = FALSE)  %>%
+  layout(hoverlabel = list(align = "left"))
+```
+
+Alameda
+=====================================
+
+### Confirmed Cases
+```{r}
+ac_tot_plot <- whisker.render(template_tot,ac_data)
+eval(parse(text=ac_tot_plot))
+```
+
+### Additional cases by day
+
+```{r}
+ac_new_plot <- whisker.render(template_new,ac_data)
+eval(parse(text=ac_new_plot))
+```
+
+### Deaths
+```{r}
+ac_deaths_plot <- whisker.render(template_deaths,ac_data)
+eval(parse(text=ac_deaths_plot))
+```
+
+Contra Costa
+=====================================
+
+### Confirmed Cases
+```{r}
+cc_tot_plot <- whisker.render(template_tot,cc_data)
+eval(parse(text=cc_tot_plot))
+```
+
+### Additional cases by day
+
+```{r}
+cc_new_plot <- whisker.render(template_new,cc_data)
+eval(parse(text=cc_new_plot))
+```
+
+### Deaths
+```{r}
+cc_deaths_plot <- whisker.render(template_deaths,cc_data)
+eval(parse(text=cc_deaths_plot))
+```
+
+Marin
+=====================================
+
+### Confirmed Cases
+```{r}
+mc_tot_plot <- whisker.render(template_tot,mc_data)
+eval(parse(text=mc_tot_plot))
+```
+
+### Additional cases by day
+
+```{r}
+mc_new_plot <- whisker.render(template_new,mc_data)
+eval(parse(text=mc_new_plot))
+```
+
+### Deaths
+```{r}
+mc_deaths_plot <- whisker.render(template_deaths,mc_data)
+eval(parse(text=mc_deaths_plot))
+```
+
+Monterey
+=====================================
+
+### Confirmed Cases
+```{r}
+mo_tot_plot <- whisker.render(template_tot,mo_data)
+eval(parse(text=mo_tot_plot))
+```
+
+### Additional cases by day
+
+```{r}
+mo_new_plot <- whisker.render(template_new,mo_data)
+eval(parse(text=mo_new_plot))
+```
+
+### Deaths
+```{r}
+mo_deaths_plot <- whisker.render(template_deaths,mo_data)
+eval(parse(text=mo_deaths_plot))
+```
+
+
+Napa
+=====================================
+
+### Confirmed Cases
+```{r}
+nc_tot_plot <- whisker.render(template_tot,nc_data)
+eval(parse(text=nc_tot_plot))
+```
+
+### Additional cases by day
+
+```{r}
+nc_new_plot <- whisker.render(template_new,nc_data)
+eval(parse(text=nc_new_plot))
+```
+
+### Deaths
+```{r}
+nc_deaths_plot <- whisker.render(template_deaths,nc_data)
+eval(parse(text=nc_deaths_plot))
+```
+
+SF
+=====================================
+
+### Confirmed Cases
+```{r}
+sf_tot_plot <- whisker.render(template_tot,sf_data)
+eval(parse(text=sf_tot_plot))
+```
+
+### Additional cases by day
+
+```{r}
+sf_new_plot <- whisker.render(template_new,sf_data)
+eval(parse(text=sf_new_plot))
+```
+
+### Deaths
+```{r}
+sf_deaths_plot <- whisker.render(template_deaths,sf_data)
+eval(parse(text=sf_deaths_plot))
+```
+
+San Mateo
+=====================================
+
+### Confirmed Cases
+```{r}
+sm_tot_plot <- whisker.render(template_tot,sm_data)
+eval(parse(text=sm_tot_plot))
+```
+
+### Additional cases by day
+
+```{r}
+sm_new_plot <- whisker.render(template_new,sm_data)
+eval(parse(text=sm_new_plot))
+```
+
+### Deaths
+```{r}
+sm_deaths_plot <- whisker.render(template_deaths,sm_data)
+eval(parse(text=sm_deaths_plot))
+```
+
+Santa Clara
+=====================================
+
+### Confirmed Cases
+```{r}
+scc_tot_plot <- whisker.render(template_tot,scc_data)
+eval(parse(text=scc_tot_plot))
+```
+
+### Additional cases by day
+
+```{r}
+scc_new_plot <- whisker.render(template_new,scc_data)
+eval(parse(text=scc_new_plot))
+```
+
+### Deaths
+```{r}
+scc_deaths_plot <- whisker.render(template_deaths,scc_data)
+eval(parse(text=scc_deaths_plot))
+```
+
+Santa Cruz
+=====================================
+
+### Confirmed Cases
+```{r}
+scz_tot_plot <- whisker.render(template_tot,scz_data)
+eval(parse(text=scz_tot_plot))
+```
+
+### Additional cases by day
+
+```{r}
+scz_new_plot <- whisker.render(template_new,scz_data)
+eval(parse(text=scz_new_plot))
+```
+
+### Deaths
+```{r}
+scz_deaths_plot <- whisker.render(template_deaths,scz_data)
+eval(parse(text=scz_deaths_plot))
+```
+
+Solano
+=====================================
+
+### Confirmed Cases
+```{r}
+sol_tot_plot <- whisker.render(template_tot,sol_data)
+eval(parse(text=sol_tot_plot))
+```
+
+### Additional cases by day
+
+```{r}
+sol_new_plot <- whisker.render(template_new,sol_data)
+eval(parse(text=sol_new_plot))
+```
+
+### Deaths
+```{r}
+sol_deaths_plot <- whisker.render(template_deaths,sol_data)
+eval(parse(text=sol_deaths_plot))
+```
+
+
+Sonoma
+=====================================
+
+### Confirmed Cases
+```{r}
+son_tot_plot <- whisker.render(template_tot,son_data)
+eval(parse(text=son_tot_plot))
+```
+
+### Additional cases by day
+
+```{r}
+son_new_plot <- whisker.render(template_new,son_data)
+eval(parse(text=son_new_plot))
+```
+
+### Deaths
+```{r}
+son_deaths_plot <- whisker.render(template_deaths,son_data)
+eval(parse(text=son_deaths_plot))
+```
+
+More
+=====================================
+
+By [Jack J. Lee](https://www.jackjleescience.com)
+
+Numbers from [L.A. Times coronavirus data](https://github.com/datadesk/california-coronavirus-data/blob/master/latimes-county-totals.csv).
+
+Files available on [Github](https://github.com/jackjlee/covid19_bayarea_lat). Code last run on **`r Sys.Date()`**
+
+Previous version of page archived at [https://www.jackjleescience.com/dataviz/covid19_bayarea_old.html](https://www.jackjleescience.com/dataviz/covid19_bayarea_old.html)
